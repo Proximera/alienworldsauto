@@ -49,11 +49,11 @@ class TestFinancialAnalyzer(unittest.TestCase):
     def setUp(self):
         # Create dummy dataframes for different sectors
         self.df_ind = pd.DataFrame({
-            'FINANCIAL_ITEM_NAME_TR': ['Hasılat', 'Esas Faaliyet Karı (Zararı)', 'Dönem Karı (Zararı)', 'Özkaynaklar'],
-            '2023/3': [100, 20, 10, 500],
-            '2023/6': [250, 60, 35, 520],
-            '2023/9': [450, 110, 70, 550],
-            '2023/12': [700, 180, 120, 600]
+            'FINANCIAL_ITEM_NAME_TR': ['Hasılat', 'Esas Faaliyet Karı (Zararı)', 'Amortisman Giderleri', 'Dönem Karı (Zararı)', 'Özkaynaklar'],
+            '2023/3': [100, 20, 5, 10, 500],
+            '2023/6': [250, 60, 12, 35, 520],
+            '2023/9': [450, 110, 20, 70, 550],
+            '2023/12': [700, 180, 30, 120, 600]
         })
 
         self.df_bank = pd.DataFrame({
@@ -95,6 +95,20 @@ class TestFinancialAnalyzer(unittest.TestCase):
         # Bank Q2 Operating Profit = 650 - 300 = 350
         val = FinancialAnalyzer.calculate_period(self.df_bank, "Banka", "Operating_Profit", "2023", "6", mode="izole")
         self.assertEqual(val, 350)
+
+    def test_calculate_ebitda_industrial_isolated(self):
+        # Q2 Operating Profit (Isolated) = 60 - 20 = 40
+        # Q2 Amortization (Isolated) = 12 - 5 = 7
+        # EBITDA = 40 + 7 = 47
+        val = FinancialAnalyzer.calculate_period(self.df_ind, "Endüstriyel", "EBITDA", "2023", "6", mode="izole")
+        self.assertEqual(val, 47)
+
+    def test_calculate_ebitda_industrial_cumulative(self):
+        # Q2 Operating Profit (Cum) = 60
+        # Q2 Amortization (Cum) = 12
+        # EBITDA = 72
+        val = FinancialAnalyzer.calculate_period(self.df_ind, "Endüstriyel", "EBITDA", "2023", "6", mode="kumulatif")
+        self.assertEqual(val, 72)
 
 if __name__ == '__main__':
     unittest.main()

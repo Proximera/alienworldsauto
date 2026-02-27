@@ -15,7 +15,8 @@ SECTOR_MAPPINGS = {
             "Operating_Profit": ["Esas Faaliyet Karı (Zararı)", "Faaliyet Karı (Zararı)"],
             "Net_Profit": ["Dönem Karı (Zararı)", "Net Dönem Karı/Zararı"],
             "Equity": ["Ana Ortaklığa Ait Özkaynaklar", "Özkaynaklar"],
-            "Flow_Items": ["Revenue", "Operating_Profit", "Net_Profit"] # Items to subtract previous quarter
+            "Amortization": ["Amortisman Giderleri", "Amortisman ve İtfa Giderleri", "Amortisman"],
+            "Flow_Items": ["Revenue", "Operating_Profit", "Net_Profit", "Amortization"] # Items to subtract previous quarter
         }
     },
     "Banka": {
@@ -25,6 +26,7 @@ SECTOR_MAPPINGS = {
             "Operating_Profit": ["XI. NET FAALİYET KARI/ZARARI (VIII-IX-X)", "Net Faaliyet Karı"],
             "Net_Profit": ["XXIII. NET DÖNEM KARI/ZARARI (XVII+XXII)", "Net Dönem Karı/Zararı"],
             "Equity": ["XVI. ÖZKAYNAKLAR", "Özkaynaklar"],
+            "Amortization": [], # Usually not added back for Banks in simple view
             "Flow_Items": ["Revenue", "Operating_Profit", "Net_Profit"]
         }
     },
@@ -35,6 +37,7 @@ SECTOR_MAPPINGS = {
             "Operating_Profit": ["M- Diğer Faaliyetlerden ve Olağandışı Faal. Gelir ve Karlar(+/-)", "Diğer Faaliyet Gelirleri"], # This might be tricky, let's use Net Profit as main driver
             "Net_Profit": ["N- Dönem Net Karı veya Zararı", "Dönem Net Karı"],
             "Equity": ["Özsermaye Toplamı", "Özkaynaklar"],
+            "Amortization": [],
             "Flow_Items": ["Revenue", "Operating_Profit", "Net_Profit"]
         }
     },
@@ -45,6 +48,7 @@ SECTOR_MAPPINGS = {
              "Operating_Profit": ["XI. NET FAALİYET KARI/ZARARI (VIII-IX-X)"],
              "Net_Profit": ["XXIII. NET DÖNEM KARI/ZARARI (XVII+XXII)"],
              "Equity": ["XVI. ÖZKAYNAKLAR"],
+             "Amortization": [],
              "Flow_Items": ["Revenue", "Operating_Profit", "Net_Profit"]
         }
     }
@@ -126,31 +130,47 @@ class FinancialAnalyzer:
 
         current_period = f"{year}/{quarter}"
 
-        val_current = FinancialAnalyzer.get_value(df, current_period, keywords)
+        def get_isolated_val(kws, is_flow):
+            val_curr = FinancialAnalyzer.get_value(df, current_period, kws)
 
-        # If Cumulative mode or Balance Sheet item (not in Flow_Items), return raw value
-        if mode == "kumulatif" or item_type not in flow_items:
-            return val_current
+            if mode == "kumulatif" or not is_flow:
+                return val_curr
 
-        # Quarter 1 is always same as Cumulative
-        if quarter == "3":
-            return val_current
+            if quarter == "3":
+                return val_curr
 
-        # For Q2, Q3, Q4 in Isolated Mode: Subtract previous cumulative
-        prev_quarter_map = {"6": "3", "9": "6", "12": "9"}
-        if quarter in prev_quarter_map:
-            prev_q = prev_quarter_map[quarter]
-            prev_period = f"{year}/{prev_q}"
-            val_prev = FinancialAnalyzer.get_value(df, prev_period, keywords)
-            return val_current - val_prev
+            prev_quarter_map = {"6": "3", "9": "6", "12": "9"}
+            if quarter in prev_quarter_map:
+                prev_q = prev_quarter_map[quarter]
+                prev_period = f"{year}/{prev_q}"
+                val_prev = FinancialAnalyzer.get_value(df, prev_period, kws)
+                return val_curr - val_prev
+            return val_curr
 
-        return val_current
+        # If requesting EBITDA (FAVÖK), we sum Operating Profit + Amortization
+        if item_type == "EBITDA":
+            op_profit = get_isolated_val(mapping.get("Operating_Profit", []), True)
+
+            # Add amortization only for industrial usually, but we check if mapping has it
+            amort_kws = mapping.get("Amortization", [])
+            if amort_kws:
+                # Amortization is an expense (usually positive number in statement or negative?),
+                # but in Turkish statements usually positive. EBITDA = OP + Amortization.
+                # NOTE: In TR statements 'General Admin Expenses' includes amortization, so we add it back.
+                # However, fetch_financials usually returns positive values for expenses in detail lines?
+                # Let's assume standard add-back.
+                amort = get_isolated_val(amort_kws, True)
+                return op_profit + amort
+            return op_profit
+
+        # Standard calculation
+        return get_isolated_val(keywords, item_type in flow_items)
 
 class BistAnalizApp:
     def __init__(self, root):
         self.root = root
         self.root.title("BIST Pro Analiz Terminali v2.0")
-        self.root.geometry("1400x700")
+        self.root.geometry("1600x750")
         self.root.configure(bg="#f4f6f8")
 
         self._setup_styles()
@@ -237,17 +257,28 @@ class BistAnalizApp:
         self.tree_frame = tk.Frame(self.root)
         self.tree_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=10)
 
-        cols = ["Hisse", "Sektör", "Karşılaştırma", "Ciro (Mn TL)", "Ciro %", "Faaliyet Kar (Mn)", "Faal. %", "Net Kar (Mn)", "Net Kar %", "Özkaynak %"]
-        self.tree = ttk.Treeview(self.tree_frame, columns=cols, show="headings")
+        # Expanded columns to show Old and New values and Margins
+        self.cols = [
+            "Hisse", "Sektör",
+            "Ciro (Eski)", "Ciro (Yeni)", "Ciro Büyüme",
+            "FAVÖK (Eski)", "FAVÖK (Yeni)", "FAVÖK Büyüme", "FAVÖK Marjı (Yeni)", "Marj Değişimi",
+            "Net Kar (Eski)", "Net Kar (Yeni)", "Net Kar Büyüme", "Net Kar Marjı (Yeni)",
+            "Özkaynak (Eski)", "Özkaynak (Yeni)", "Özk. Büyüme"
+        ]
 
-        for col in cols:
+        self.tree = ttk.Treeview(self.tree_frame, columns=self.cols, show="headings")
+
+        for col in self.cols:
             self.tree.heading(col, text=col)
-            width = 60 if col == "Hisse" else 80 if col == "Sektör" else 100
+            width = 50 if col == "Hisse" else 75 if col == "Sektör" else 95 if "Marj" in col or "Büyüme" in col else 105
             self.tree.column(col, width=width, anchor="center")
 
         scroll_y = tk.Scrollbar(self.tree_frame, orient="vertical", command=self.tree.yview)
         scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.configure(yscrollcommand=scroll_y.set)
+        scroll_x = tk.Scrollbar(self.tree_frame, orient="horizontal", command=self.tree.xview)
+        scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+
+        self.tree.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
         self.tree.pack(fill=tk.BOTH, expand=True)
 
         # Log
@@ -299,16 +330,22 @@ class BistAnalizApp:
 
             # Analyze
             try:
-                # New Period
+                # Calculate Values
+                # Revenue
                 rev_new = FinancialAnalyzer.calculate_period(df, sector, "Revenue", y2, q2, mode)
-                op_new = FinancialAnalyzer.calculate_period(df, sector, "Operating_Profit", y2, q2, mode)
-                net_new = FinancialAnalyzer.calculate_period(df, sector, "Net_Profit", y2, q2, mode)
-                eq_new = FinancialAnalyzer.calculate_period(df, sector, "Equity", y2, q2, mode) # Equity is stock, mode logic inside handles it
-
-                # Old Period
                 rev_old = FinancialAnalyzer.calculate_period(df, sector, "Revenue", y1, q1, mode)
-                op_old = FinancialAnalyzer.calculate_period(df, sector, "Operating_Profit", y1, q1, mode)
+
+                # EBITDA (FAVÖK)
+                # For banks/insurance, EBITDA might just be Op Profit or similar
+                ebitda_new = FinancialAnalyzer.calculate_period(df, sector, "EBITDA", y2, q2, mode)
+                ebitda_old = FinancialAnalyzer.calculate_period(df, sector, "EBITDA", y1, q1, mode)
+
+                # Net Profit
+                net_new = FinancialAnalyzer.calculate_period(df, sector, "Net_Profit", y2, q2, mode)
                 net_old = FinancialAnalyzer.calculate_period(df, sector, "Net_Profit", y1, q1, mode)
+
+                # Equity (Stock item)
+                eq_new = FinancialAnalyzer.calculate_period(df, sector, "Equity", y2, q2, mode)
                 eq_old = FinancialAnalyzer.calculate_period(df, sector, "Equity", y1, q1, mode)
 
                 # Growth Calcs
@@ -316,25 +353,38 @@ class BistAnalizApp:
                     if old == 0: return 0.0
                     return ((new - old) / abs(old)) * 100
 
+                def calc_margin(profit, rev):
+                    if rev == 0: return 0.0
+                    return (profit / rev) * 100
+
+                def fmt(val):
+                    return f"₺ {val/1_000_000:,.1f} Mn"
+
+                # Margins
+                ebitda_margin_new = calc_margin(ebitda_new, rev_new)
+                ebitda_margin_old = calc_margin(ebitda_old, rev_old)
+                ebitda_margin_diff = ebitda_margin_new - ebitda_margin_old
+
+                net_margin_new = calc_margin(net_new, rev_new)
+
                 row = {
                     "Hisse": symbol,
                     "Sektör": sector,
-                    "Karşılaştırma": f"{y2}/{q2} vs {y1}/{q1}",
-                    "Ciro (Mn TL)": f"{rev_new/1_000_000:,.1f}",
-                    "Ciro %": f"%{calc_growth(rev_new, rev_old):.1f}",
-                    "Faaliyet Kar (Mn)": f"{op_new/1_000_000:,.1f}",
-                    "Faal. %": f"%{calc_growth(op_new, op_old):.1f}",
-                    "Net Kar (Mn)": f"{net_new/1_000_000:,.1f}",
-                    "Net Kar %": f"%{calc_growth(net_new, net_old):.1f}",
-                    "Özkaynak %": f"%{calc_growth(eq_new, eq_old):.1f}",
-                    "_raw_rev": rev_new, # For sorting or excel if needed
+                    "Ciro (Eski)": fmt(rev_old), "Ciro (Yeni)": fmt(rev_new), "Ciro Büyüme": f"% {calc_growth(rev_new, rev_old):.1f}",
+                    "FAVÖK (Eski)": fmt(ebitda_old), "FAVÖK (Yeni)": fmt(ebitda_new), "FAVÖK Büyüme": f"% {calc_growth(ebitda_new, ebitda_old):.1f}",
+                    "FAVÖK Marjı (Yeni)": f"% {ebitda_margin_new:.1f}",
+                    "Marj Değişimi": f"{'+' if ebitda_margin_diff > 0 else ''}{ebitda_margin_diff:.1f} Puan",
+                    "Net Kar (Eski)": fmt(net_old), "Net Kar (Yeni)": fmt(net_new), "Net Kar Büyüme": f"% {calc_growth(net_new, net_old):.1f}",
+                    "Net Kar Marjı (Yeni)": f"% {net_margin_new:.1f}",
+                    "Özkaynak (Eski)": fmt(eq_old), "Özkaynak (Yeni)": fmt(eq_new), "Özk. Büyüme": f"% {calc_growth(eq_new, eq_old):.1f}",
+                    "_raw_rev": rev_new,
                     "_raw_net": net_new
                 }
 
                 self.results_data.append(row)
 
                 # Insert into Treeview
-                values = [row[c] for c in ["Hisse", "Sektör", "Karşılaştırma", "Ciro (Mn TL)", "Ciro %", "Faaliyet Kar (Mn)", "Faal. %", "Net Kar (Mn)", "Net Kar %", "Özkaynak %"]]
+                values = [row[c] for c in self.cols]
                 self.tree.insert("", "end", values=values)
 
             except Exception as e:
